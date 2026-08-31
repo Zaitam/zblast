@@ -1,0 +1,24 @@
+# CMake build output
+/cmake-build-*/
+/build/
+
+# Compiled binaries / ad-hoc g++ builds
+/main
+/main_debug
+/a.out
+*.o
+*.obj
+*.out
+*.exe
+
+# Profiling / debugging artifacts
+callgrind.out.*
+err.log
+
+# Generated caches
+/permutation.cache
+/cache/
+
+# JetBrains IDE settings
+.idea/
+
