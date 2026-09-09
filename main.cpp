@@ -1,5 +1,6 @@
 #include <bits/stdc++.h>
 #include <filesystem>
+#include <cassert>
 using namespace std;
 
 #define forsn(i, s, n) for (int i = (s); i < (int)(n); i++)
@@ -9,11 +10,12 @@ using namespace std;
 #define se second
 #define pb push_back
 
+const uint32_t WORDSIZE = 3;
 using BLOSUM_WEIGHT = int8_t;
 using BLOSUM = array<array<BLOSUM_WEIGHT, 25>, 25>;
 
 BLOSUM load_blosum(const string &filename) {
-    BLOSUM res;
+    BLOSUM res{};
     fstream f(filename.c_str(), ios::in);
     int c;
     forn(i, 25) forn(j, 25) {
@@ -83,13 +85,7 @@ struct WordPermutation {
         forn(x, 25) best[x] = *max_element(blosum[x].begin(), blosum[x].end());
     };
 
-    int transformCost(const Word& from, const Word& to) {
-        int cost = 0;
-        forn(i, sz(to.word)) cost += blosum[from.word[i]][to.word[i]];
-        return cost;
-    };
-
-    void dfs(const Words &from, int k, int partial, uint16_t index, vector<uint16_t> &out) {
+    void dfs(const Word &from, int k, int partial, uint16_t index, vector<uint16_t> &out) {
         if (k == 3){ out.pb(index); return;}
         int max_rest = 0;
         forsn(j, k+1, 3) max_rest += best[from.word[j]];
@@ -100,85 +96,14 @@ struct WordPermutation {
         }
     }
 
-    void generate_all_permutations() {
-        for(uint8_t ii = 0; ii < 25; ++ii)
-            for(uint8_t ji = 0; ji < 25; ++ji)
-                for(uint8_t ki = 0; ki < 25; ++ki) {
-                    Word initial = {ii, ji, ki};
-                    const uint16_t w = initial.toValue();
-                    for(uint8_t it = 0; it < 25; ++it) {
-                        for(uint8_t jt = 0; jt < 25; ++jt)
-                            for(uint8_t kt = 0; kt < 25; ++kt) {
-                                Word target = {it, jt, kt};
-                                if (transformCost(initial, target) >= threshold)
-                                    permutations[w].pb(target.toValue());
-                            }
-                    }
-                    computed[w] = true;
-                }
-    }
-
-    vector<uint16_t>& get_permutations(const uint16_t& from_index) {
-        Word from = {(uint8_t)(from_index / 625), (uint8_t)(from_index / 25 % 25), (uint8_t)(from_index % 25)};
-        return get_permutations(from);
-    }
-    vector<uint16_t>& get_permutations(Word& from) {
-        const uint16_t w = from.toValue();
-        if (computed[w]) return permutations[from.toValue()];
-        for(uint8_t it = 0; it < 25; ++it)
-            for(uint8_t jt = 0; jt < 25; ++jt)
-                for(uint8_t kt = 0; kt < 25; ++kt) {
-                    Word target = {it, jt, kt};
-                    if (transformCost(from, target) >= threshold)
-                        permutations[w].pb(target.toValue());
-                }
-        computed[w] = true;
-        return permutations[w];
-    }
-
     vector<uint16_t>& operator[](const uint16_t &value) {
         if (computed[value]) return permutations[value];
         Word from = {(uint8_t)(value / (25 * 25)), (uint8_t)(value / 25 % 25), (uint8_t)(value % 25)};
         dfs(from, 0, 0, 0, permutations[value]);
         computed[value] = true;
         return permutations[value];
-        //return get_permutations(value);
     }
 
-    void save_permutations(const string& filename) {
-        fstream f(filename.c_str(), ios::out);
-        f << threshold << '\n';
-        forn(i, 25*25*25) {
-            f << i << " ";
-            if (computed[i]) {
-                f << 1 << " " << sz(permutations[i]);
-                forn(j, sz(permutations[i]))
-                    f << " " << permutations[i][j];
-            } else f << 0;
-            f << '\n';
-        }
-    }
-    void load_permutations(const string& filename) {
-        fstream f(filename.c_str(), ios::in);
-        int t;
-        f >> t;
-        assert(t == threshold); // same k
-        for (auto& p : permutations) p.clear();
-        forn(i, 25*25*25) {
-            f >> t;
-            assert(i == t); // broken cache
-            f >> t;
-            if (t) {
-                f >> t;
-                computed[i] = true;
-                permutations[i].resize(t);
-                forn(j, t) f >> permutations[i][j];
-            } else {
-                computed[i] = false;
-                permutations[i].resize(0);
-            }
-        }
-    }
 };
 //const static string DATABASE_REG = "./DB.reg.db";
 using AccessNumber = uint16_t;
@@ -189,6 +114,15 @@ struct DB {
     array<vector<WordAlign>, 25 * 25 * 25> wordReg;
     LetterCodeMap &letter_code_map;
 
+    vector<uint8_t>  residues;
+    vector<uint32_t> offsets; // offsets[a] .. offsets[a+1] es la secuencia a
+    Position max_sequence_len = 0;
+
+    uint8_t* sequence_of(AccessNumber &access) {return residues.data() + offsets[access]; };
+    uint32_t length_of(AccessNumber &access) { return offsets[access + 1] - offsets[access]; };
+    size_t sequence_count() { return offsets.empty() ? 0 : offsets.size() - 1; };
+
+
     DB(LetterCodeMap & letter_map) : letter_code_map(letter_map) {};
 
     void add(const string &sequence, const AccessNumber access_number) {
@@ -196,6 +130,11 @@ struct DB {
             (uint8_t)letter_code_map[sequence[0]].value,
             (uint8_t)letter_code_map[sequence[1]].value};
         WordIndex index = initial.toIndex();
+
+        if (offsets.empty()) offsets.pb(0);
+        forn(i, sz(sequence)) residues.pb((uint8_t) letter_code_map[sequence[i]].value); // store sequence code
+        offsets.pb(residues.size());
+        max_sequence_len = max(max_sequence_len, (Position)sz(sequence));
         forsn(i, 2, sz(sequence))
             index.updateIndex(letter_code_map[sequence[i]].value), wordReg[index.value].pb({access_number, i});
         // TODO: Offload to DISK
@@ -204,20 +143,12 @@ struct DB {
 
     void load_file_to_database(const string& filename) {
         fstream f(filename.c_str(), ios::in);
-        int access;
+            int access;
         string sequence;
         while(f >> access) {
             f >> sequence;
             add(sequence, (AccessNumber)access);
         }
-    }
-
-    void generate_appearence_map(Word word, map<AccessNumber, long long>& appearence_map) { //rename
-        generate_appearence_map(word.toValue(), appearence_map);
-    }
-    void generate_appearence_map(uint16_t wordIndex, map<AccessNumber, long long> &appearence_map) {
-        for (auto match: wordReg[wordIndex])
-            appearence_map[match.fi]++;
     }
 
 };
@@ -318,7 +249,6 @@ struct HitBuffer {
 // basicamente un pair<uint32_t, uint32_t> pero se puede manejar por referencia o nullptr
 struct Seed {uint32_t first, second;};
 
-
 struct SeedBuffer {
 
     Seed *seeds = nullptr;
@@ -352,18 +282,204 @@ void two_hit(HitBuffer &buffer, SeedBuffer &seeds, uint32_t window, uint32_t min
         size_t last = i++;
         while (i < buffer.count && buffer[i].key == key) {
             const uint32_t gap = (uint32_t)(buffer[i].db_pos - buffer[last].db_pos);
-            if (gap >= min_gap && gap <= window)
-                seeds.add({(uint32_t)last, (uint32_t)i});
+            if (gap < min_gap) {i++; continue;} // Altschul 1997 p.3391: "Any hit that overlaps the most recent one is ignored."
+            if (gap <= window) seeds.add({(uint32_t)last, (uint32_t)i});
             last = i++;
         }
     }
 }
 
+struct Extension {
+    Position db_start, db_end;
+    Position q_start, q_end;
+    int32_t score;
+    AccessNumber access;
+};
+
+struct Extender {
+    BLOSUM &blosum;
+    uint8_t *query;
+    uint32_t query_len; // Variable por query
+    uint8_t x_drop_ungapped, x_drop_gapped, gap_open, gap_extend;
+    Extender(BLOSUM& blosum, uint8_t *query, uint32_t query_len, uint8_t x_drop_ungapped = 20, uint8_t x_drop_gapped = 40, uint8_t gap_open = 10, uint8_t gap_extend = 1) :
+        blosum(blosum), query(query), query_len(query_len), x_drop_ungapped(x_drop_ungapped), x_drop_gapped(x_drop_gapped), gap_open(gap_open), gap_extend(gap_extend) {};
+
+    // A partir del Seed -> Diagonal cte
+    Extension ungapped(uint8_t *db, uint32_t db_len, uint32_t qp, uint32_t dp) {
+        uint32_t back = min(WORDSIZE - 1, min(qp, dp));
+        uint32_t q0 = qp - back;
+        uint32_t d0 = dp - back;
+
+        int32_t ref = 0;
+        forn(k, back + 1) ref += blosum[query[q0 + k]][db[d0 + k]];
+
+        // Stretch right
+        int32_t score = 0;
+        int32_t right_best = 0;
+        uint32_t right_len = 0;
+        for (uint32_t k = 1; qp + k < query_len && dp + k < db_len; ++k) {
+            score += blosum[query[qp + k]][db[dp + k]];
+            if (score > right_best) right_best = score, right_len = k;
+            if (right_best - score > x_drop_ungapped) break;
+        }
+        // Stretch left
+        score = 0;
+        int32_t left_best = 0;
+        uint32_t left_reach = 0;
+        for (uint32_t k = 1; k <= q0 && k <= d0; ++k) {
+            score += blosum[query[q0 - k]][db[d0 - k]];
+            if (score > left_best) left_best = score, left_reach = k;
+            if (left_best - score > x_drop_ungapped) break;
+        }
+        return {(Position)(d0 - left_reach), (Position)(dp + right_len + 1),
+                (Position)(q0 - left_reach), (Position)(qp + right_len + 1),
+                left_best + ref + right_best, 0};
+    }
+
+    static constexpr int32_t NEG = INT32_MIN / 4;
+    int32_t half_gapped(uint8_t *q, int32_t qlen, uint8_t *d, int32_t dlen, int32_t &q_reach, int32_t &d_reach) {
+        q_reach = d_reach = 0;
+        if (qlen <= 0 || dlen <= 0) return 0;
+
+        vector<int> Hprev(dlen + 1, NEG), Hcur(dlen + 1, NEG), Ecur(dlen + 1, NEG);
+        int best = 0, lo = 0, hi = 0;
+
+        Hprev[0] = 0; // fila 0 -> gaps
+        for (int j = 1; j <= dlen; ++j) {
+            int v = -(gap_open + j * gap_extend);
+            if (best - v > x_drop_gapped) break;
+            Hprev[j] = v;
+            hi = j;
+        }
+        for (int i = 1; i <= qlen; ++i) {
+            fill(Hcur.begin(), Hcur.end(), NEG);
+            fill(Ecur.begin(), Ecur.end(), NEG);
+            int f = NEG; // gap en db
+            int new_lo = -1, new_hi = -1;
+            const int jend = min(hi + 1, dlen);
+            for (int j = lo; j <= jend; ++j) {
+                int m = NEG; // diagonal: match/mismatch
+                if (j >= 1 && Hprev[j-1] > NEG/2) m = Hprev[j-1] + blosum[q[i-1]][d[j-1]];
+                int e = NEG; // gap en query
+                if (j >= 1) {
+                    int fh = (Hcur[j-1] > NEG/2) ? Hcur[j-1] - gap_open - gap_extend : NEG;
+                    int fe = (Ecur[j-1] > NEG/2) ? Ecur[j-1] - gap_extend            : NEG;
+                    e = max(fh, fe);
+                }
+                int fh = (Hprev[j] > NEG/2) ? Hprev[j] - gap_open - gap_extend : NEG;
+                int ff = (f        > NEG/2) ? f        - gap_extend            : NEG;
+                f = max(fh, ff);
+
+                int h = max(m, max(e, f));
+                if (h <= NEG/2 || best - h > x_drop_gapped) continue;
+                Hcur[j] = h; Ecur[j] = e;
+                if (h > best) best = h, q_reach = i, d_reach = j;
+                if (new_lo < 0) new_lo = j;
+                new_hi = j;
+            }
+            if (new_lo < 0) break;
+            lo = new_lo; hi = new_hi;
+            swap(Hprev, Hcur);
+        }
+        return best;
+    }
+
+    Extension gapped(uint8_t *db, uint32_t db_len, uint32_t qp, uint32_t dp) {
+        int anchor = blosum[query[qp]][db[dp]];
+        int rq, rd, lq, ld;
+        int right = half_gapped(query + qp + 1, (int32_t)query_len - (int32_t)qp - 1,
+                                (db + dp + 1), (int32_t)db_len - (int32_t)dp - 1, rq, rd);
+        vector<uint8_t> qr(query, query + qp), dr(db, db + dp);
+        reverse(qr.begin(), qr.end()); reverse(dr.begin(), dr.end());
+        int left = half_gapped(qr.data(), (int32_t)qr.size(), dr.data(), (int32_t)dr.size(), lq, ld);
+        return {(Position)(dp - ld), (Position)(dp + rd + 1),
+                (Position)(qp - lq), (Position)(qp + rq + 1),
+                anchor + left + right, 0};
+    }
+};
+
+array<double, 25> load_background_freq(const string &filename, LetterCodeMap &map) {
+    array<double, 25> res{};
+    fstream f(filename.c_str(), ios::in);
+    char c;
+    double p;
+    double total = 0;
+    while(f >> c) {
+        f >> p;
+        res[map[c].value] = p, total += p;
+    }
+    return res;
+}
+
+struct GappedConfig { double lambda, K, H_bits; };
+GappedConfig load_karlin_gapped(const string &filename, int gap_open, int gap_extend) {
+    fstream f(filename.c_str(), ios::in);
+    int go, ge;
+    double lambda, k, h;
+    while(f >> go) {
+        f >> ge >> lambda >> k >> h;
+        if (go == gap_open && ge == gap_extend) return {lambda, k, h};
+    }
+    throw runtime_error(filename + ": no hay fila para gap_open=" + to_string(gap_open) +
+                        " gap_extend=" + to_string(gap_extend));
+}
+
+struct KarlinAltschul {
+    array<double, 25> P{};
+    double long lambda, K, H;
+
+    KarlinAltschul(BLOSUM &blosum, bool with_gaps, array<double, 25> &fallback, GappedConfig &gapped, vector<uint8_t> *residues = nullptr) {
+        double total = 0;
+        if (residues) for (uint8_t r : *residues) if (r < 20) P[r] += 1, total += 1;
+
+        if (total > 0) forn(i, 20) P[i] /= total;
+        else forn(i, 20) P[i] = fallback[i];
+
+        if (with_gaps) {
+            lambda = gapped.lambda; K = gapped.K;
+            H = gapped.H_bits * log(2.0); // la tabla esta en bits, aca van nats
+            return;
+        }
+        // biseccion sobre F(l) = sum p_i p_j e^(l s_ij) - 1
+        // F(0)=0, F'(0)<0 (score esperado al azar es negativo) -> 1 sola raiz positiva
+        auto F = [&](double l) {
+            double s = 0;
+            forn(i, 20) forn(j, 20) s += P[i] * P[j] * exp(l * blosum[i][j]);
+            return s - 1.0;
+        };
+        double lo = 1e-9, hi = 2.0;
+        forn(it, 200) { double mid = (lo + hi) / 2; (F(mid) < 0 ? lo : hi) = mid; }
+        lambda = (lo + hi) / 2;
+        H = 0;
+        forn(i, 20) forn(j, 20) H += P[i] * P[j] * exp(lambda * blosum[i][j]) * blosum[i][j];
+        H *= lambda;
+        K = gapped.K;
+    }
+
+    double bits(int score) const { return (lambda * score - log(K)) / log(2.0); }
+
+    double evalue(int score, uint32_t m, double n, uint32_t num_seqs) const {
+        // Mal borde -> alineamiento en ultimo residuio -> espacio menor que m*n -> iterar (en 5 converge) [Copiado de NCBI]
+        double L = 0, me = m, ne = n;
+        forn(it, 5) {
+            me = max((double)(1.0 / K), (double)m - L);
+            ne = max((double)(1.0 / K), n - (double)num_seqs * L);
+            L = log(K * me * ne) / H;
+            if (L < 0) L = 0;
+        }
+        return K * me * ne * exp(-lambda * score);
+    }
+};
+
 #define el '\n'
 
-int main() {
+int main() try {
     BLOSUM blosum = load_blosum("assets/BLOSUM62");
     LetterCodeMap index_map = load_letter_code("assets/LETTER_INDEX");
+    array<double, 25> background = load_background_freq("assets/BACKGROUND_FREQ", index_map);
+    GappedConfig ungapped_config = load_karlin_gapped("assets/KARLIN_GAPPED", 0, 0);
+    GappedConfig gapped_config   = load_karlin_gapped("assets/KARLIN_GAPPED", 10, 1);
+
 
     DB database(index_map);
     database.load_file_to_database("assets/SEQUENCE_large");
@@ -373,15 +489,15 @@ int main() {
     string query_string;
     cin >> query_string;
 
-    Word initial = {0,
-            (uint8_t)index_map[query_string[0]].value,
-            (uint8_t)index_map[query_string[1]].value};
+    uint32_t qLen = sz(query_string);
+    vector<uint8_t> query;
+    forn(i, qLen) query.pb((uint8_t)index_map[query_string[i]].value);
+
+    Word initial = {0, query[0], query[1]};
     WordIndex index = initial.toIndex();
-    //map<AccessNumber, long long> appearence_map;
-    HitBuffy er buffer;
-    const uint32_t qLen =  sz(query_string);
+    HitBuffer buffer;
     forsn(i, 2, qLen) {
-        index.updateIndex(index_map[query_string[i]].value);
+        index.updateIndex(query[i]);
         for ( auto wordIndex: word_permutation[index.value])
             for (auto &wordMatch : database.wordReg[wordIndex] )
                 buffer.add(Hit(wordMatch.fi, (Position)i, wordMatch.se, qLen));
@@ -392,10 +508,59 @@ int main() {
     radix.sort(buffer);
 
     SeedBuffer seeds;
-    two_hit(buffer, seeds, 40, 3); // window, min_gap = wordsize
+    two_hit(buffer, seeds, 40, WORDSIZE); // window, min_gap = wordsize
     cout << "seeds " << seeds.count << el;
-    int extensions;
-    forn(s, seeds.count)
-        if (s == 0 || buffer[seeds[s].second].key != buffer[seeds[s-1].second].key) extensions++;
-    cout << "ext " << extensions << el;
+
+    Extender extender(blosum, query.data(), qLen);
+    KarlinAltschul ku(blosum, false, background, ungapped_config, &database.residues);
+    KarlinAltschul kg(blosum, true,  background, gapped_config,   &database.residues);
+
+    vector<Extension> hsps;
+    DiagonalKey covered_key = 0;
+    Position covered_until = 0;   // arranca en 0: db_pos < 0 nunca es cierto sin signo
+    forn(s, seeds.count) {
+        Hit &hit = buffer[seeds[s].second];
+        if (hit.key == covered_key && hit.db_pos < covered_until) continue;
+        AccessNumber acc = hit.access();
+        Extension e = extender.ungapped(database.sequence_of(acc), database.length_of(acc),
+                                        hit.query_pos, hit.db_pos);
+        e.access = acc;
+        covered_key = hit.key, covered_until = e.db_end;
+        if (ku.bits(e.score) >= 22) hsps.pb(e); // S_g del paper: ~22 bits
+    }
+    cout << "hsps " << sz(hsps) << el;
+
+    for (auto &h : hsps) {
+        Extension g = extender.gapped(database.sequence_of(h.access), database.length_of(h.access),
+                                      (h.q_start + h.q_end) / 2, (h.db_start + h.db_end) / 2);
+        g.access = h.access;
+        if (g.score > h.score) h = g;
+    }
+
+    map<AccessNumber, Extension> best;
+    for (auto &h : hsps) if (!best.count(h.access) || h.score > best[h.access].score) best[h.access] = h;
+    vector<Extension> results;
+    for (auto &kv : best) results.pb(kv.second);
+    sort(results.begin(), results.end(), [](Extension &a,Extension &b) { return a.score > b.score; });
+
+    double db_len = database.residues.size();
+    uint32_t num_seqs = database.sequence_count();
+    printf("\n%-8s %7s %7s %11s   %-13s %s\n", "access", "score", "bits", "E-value", "query", "base");
+    int shown = 0;
+    for (auto &h : results) {
+        double e = kg.evalue(h.score, qLen, db_len, num_seqs);
+        if (e > 0.001) break;
+        if (++shown > 20) break;
+        printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u\n", h.access, h.score,
+               (double)kg.bits(h.score), e, h.q_start, h.q_end, h.db_start, h.db_end);
+    }
+    if (!shown) forn(i, min(5, sz(results))) {
+        Extension &h = results[i];
+        printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u  NS\n", h.access, h.score,
+               (double)kg.bits(h.score), kg.evalue(h.score, qLen, db_len, num_seqs),
+               h.q_start, h.q_end, h.db_start, h.db_end);
+    }
+    cout << el << "lambda " << (double)ku.lambda << "  K " << (double)ku.K << "  H " << (double)ku.H << " (from DB)" << el;
+    return 0;
 }
+catch (exception &e) { cerr << "error: " << e.what() << el; return 1; }

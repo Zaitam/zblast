@@ -22,3 +22,14 @@ err.log
 # JetBrains IDE settings
 .idea/
 
+
+# Bases descargadas e indices
+/data/
+/idx/
+
+# Binarios
+/zblast*
+/help
+/proposals
+*.lin
+*.dSYM/
