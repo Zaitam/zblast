@@ -106,7 +106,7 @@ struct WordPermutation {
 
 };
 //const static string DATABASE_REG = "./DB.reg.db";
-using AccessNumber = uint16_t;
+using AccessNumber = uint32_t;
 using Position = uint16_t;
 using WordAlign = pair<AccessNumber, Position>;
 
@@ -154,7 +154,9 @@ struct DB {
 };
 
 using Diagonal = int32_t;
-using DiagonalKey = uint32_t; // access << 16 | dbPos - queryPos + queryLen
+using DiagonalKey = uint64_t; // access << 32 | dbPos - queryPos + queryLen
+static const int ACCESS_KEY_SHIFT = 32;
+// Radix deberia ser 8 pasadas ahora...
 
 const size_t INITIAL_CAPACITY = 1 << 16; // para los buffers
 struct Hit {
@@ -165,12 +167,12 @@ struct Hit {
     Hit() = default;
     Hit(AccessNumber access, Position query_pos, Position db_pos, Position query_len) :  query_pos(query_pos), db_pos(db_pos) {
         const Diagonal diagonal = (Diagonal)db_pos - (Diagonal)query_pos;
-        key = ((DiagonalKey)access << 16)
+        key = ((DiagonalKey)access << ACCESS_KEY_SHIFT)
             | (DiagonalKey)(uint16_t)(diagonal + (Diagonal)query_len);
     }
 
     Diagonal diagonal() const { return (Diagonal)db_pos - (Diagonal)query_pos; }
-    AccessNumber access() const { return (key >> 16); }
+    AccessNumber access() const { return (key >> ACCESS_KEY_SHIFT); }
 };
 
 struct HitBuffer {
@@ -300,7 +302,7 @@ struct Extender {
     BLOSUM &blosum;
     uint8_t *query;
     uint32_t query_len; // Variable por query
-    uint8_t x_drop_ungapped, x_drop_gapped, gap_open, gap_extend;
+    uint16_t x_drop_ungapped, x_drop_gapped, gap_open, gap_extend;
     Extender(BLOSUM& blosum, uint8_t *query, uint32_t query_len, uint8_t x_drop_ungapped = 20, uint8_t x_drop_gapped = 40, uint8_t gap_open = 10, uint8_t gap_extend = 1) :
         blosum(blosum), query(query), query_len(query_len), x_drop_ungapped(x_drop_ungapped), x_drop_gapped(x_drop_gapped), gap_open(gap_open), gap_extend(gap_extend) {};
 
@@ -429,17 +431,17 @@ struct KarlinAltschul {
     double long lambda, K, H;
 
     KarlinAltschul(BLOSUM &blosum, bool with_gaps, array<double, 25> &fallback, GappedConfig &gapped, vector<uint8_t> *residues = nullptr) {
+        if (with_gaps) { // Si hay gaps -> no importa frequencia
+            lambda = gapped.lambda; K = gapped.K;
+            H = gapped.H_bits * log(2.0); // la tabla esta en bits, aca van nats
+            return;
+        }
+
         double total = 0;
         if (residues) for (uint8_t r : *residues) if (r < 20) P[r] += 1, total += 1;
 
         if (total > 0) forn(i, 20) P[i] /= total;
         else forn(i, 20) P[i] = fallback[i];
-
-        if (with_gaps) {
-            lambda = gapped.lambda; K = gapped.K;
-            H = gapped.H_bits * log(2.0); // la tabla esta en bits, aca van nats
-            return;
-        }
         // biseccion sobre F(l) = sum p_i p_j e^(l s_ij) - 1
         // F(0)=0, F'(0)<0 (score esperado al azar es negativo) -> 1 sola raiz positiva
         auto F = [&](double l) {
