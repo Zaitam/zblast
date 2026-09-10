@@ -1,6 +1,11 @@
 #include <bits/stdc++.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <filesystem>
 #include <cassert>
+
 using namespace std;
 
 #define forsn(i, s, n) for (int i = (s); i < (int)(n); i++)
@@ -18,31 +23,33 @@ BLOSUM load_blosum(const string &filename) {
     BLOSUM res{};
     fstream f(filename.c_str(), ios::in);
     int c;
-    forn(i, 25) forn(j, 25) {
-        f >> c;
-        res[i][j] = (BLOSUM_WEIGHT)(c);
-    }
+    forn(i, 25)
+        forn(j, 25) {
+            f >> c;
+            res[i][j] = (BLOSUM_WEIGHT) (c);
+        }
     return res;
 }
 
 struct LetterCode {
     int8_t value;
-    LetterCode& operator=(const int8_t &new_value) {
+
+    LetterCode &operator=(const int8_t &new_value) {
         value = new_value;
         return *this;
     }
 };
 
 struct LetterCodeMap {
-    array<LetterCode, 25> map;
+    array<LetterCode, 256> map; // char -> codigo
+    array<char, 25> letter; // codigo -> char
 
-    LetterCode& operator[](const char &letter_index) {
-        if (letter_index == '*') return map[24]; // ultima pos
-        int8_t index = (int8_t)(letter_index - 'A');
-        if (index > (int8_t)('O'-'A') - 1) index--;
-        if (index > (int8_t)('U'-'A') - 1) index--;
-        return map[index];
+    LetterCodeMap() {
+        forn(i, 256) map[i] = (int8_t) -1;
+        letter.fill('X');
     }
+
+    LetterCode &operator[](const char &letter_index) { return map[(uint8_t) letter_index]; }
 };
 
 LetterCodeMap load_letter_code(const string &filename) {
@@ -50,18 +57,25 @@ LetterCodeMap load_letter_code(const string &filename) {
     fstream f(filename.c_str(), ios::in);
     char c;
     unsigned int t;
-    while(f >> c) {
+    while (f >> c) {
         f >> t;
-        res[c] = (int8_t)t;
+        res[c] = (int8_t) t;
+        res.letter[t] = c;
+        if (isalpha((uint8_t) c)) res[(char) (c | 32)] = (int8_t) t; // la misma en minuscula
     }
+    const int8_t unknown = res['X'].value; // digits o simbolos o U o O
+    forn(i, 256) if (res.map[i].value < 0) res.map[i] = unknown;
     return res;
 }
 
 struct WordIndex {
     uint16_t value;
-    WordIndex(uint16_t index) : value(index) {};
+
+    WordIndex(uint16_t index) : value(index) {
+    };
     void updateIndex(const uint8_t &new_last) { value = (value % (25 * 25)) * 25 + new_last; }
 };
+
 struct Word {
     array<uint8_t, 3> word; // Wordsize 3
 
@@ -86,77 +100,216 @@ struct WordPermutation {
     };
 
     void dfs(const Word &from, int k, int partial, uint16_t index, vector<uint16_t> &out) {
-        if (k == 3){ out.pb(index); return;}
+        if (k == 3) {
+            out.pb(index);
+            return;
+        }
         int max_rest = 0;
         forsn(j, k+1, 3) max_rest += best[from.word[j]];
         forn(c, 25) {
             int next = partial + blosum[from.word[k]][c];
             if (next + max_rest < threshold) continue;
-            dfs(from, k + 1, next, (uint16_t)(index * 25 + c), out);
+            dfs(from, k + 1, next, (uint16_t) (index * 25 + c), out);
         }
     }
 
-    vector<uint16_t>& operator[](const uint16_t &value) {
+    vector<uint16_t> &operator[](const uint16_t &value) {
         if (computed[value]) return permutations[value];
-        Word from = {(uint8_t)(value / (25 * 25)), (uint8_t)(value / 25 % 25), (uint8_t)(value % 25)};
+        Word from = {(uint8_t) (value / (25 * 25)), (uint8_t) (value / 25 % 25), (uint8_t) (value % 25)};
         dfs(from, 0, 0, 0, permutations[value]);
         computed[value] = true;
         return permutations[value];
     }
-
 };
+
 //const static string DATABASE_REG = "./DB.reg.db";
 using AccessNumber = uint32_t;
 using Position = uint16_t;
-using WordAlign = pair<AccessNumber, Position>;
+
+// Source - https://stackoverflow.com/a/27270738
+// Posted by ikh
+// Retrieved 2026-09-09, License - CC BY-SA 3.0
+template<int A, int B>
+struct get_power {
+    static const int value = A * get_power<A, B - 1>::value;
+};
+
+template<int A>
+struct get_power<A, 0> {
+    static const int value = 1;
+};
+
+const size_t WORDS = get_power<25, WORDSIZE>::value;
+static const uint64_t ZBX_MAGIC = 0x3258424C415A55ULL; // "UZALBX2"
+static const size_t ZBX_HEADER = 48; // 6 x uint64, 0 (mod 8)
 
 struct DB {
-    array<vector<WordAlign>, 25 * 25 * 25> wordReg;
     LetterCodeMap &letter_code_map;
 
-    vector<uint8_t>  residues;
-    vector<uint32_t> offsets; // offsets[a] .. offsets[a+1] es la secuencia a
+    uint8_t *mapped = nullptr;
+    size_t mapped_len = 0;
+    uint32_t *word_off = nullptr;
+    AccessNumber *post_access = nullptr;
+    Position *post_pos = nullptr;
+    uint32_t *offsets = nullptr; // offsets[a] .. offsets[a+1] es la secuencia a
+    uint8_t *residues = nullptr;
+    uint64_t nres = 0, nseq = 0, npost = 0;
+
     Position max_sequence_len = 0;
 
-    uint8_t* sequence_of(AccessNumber &access) {return residues.data() + offsets[access]; };
-    uint32_t length_of(AccessNumber &access) { return offsets[access + 1] - offsets[access]; };
-    size_t sequence_count() { return offsets.empty() ? 0 : offsets.size() - 1; };
-
-
-    DB(LetterCodeMap & letter_map) : letter_code_map(letter_map) {};
-
-    void add(const string &sequence, const AccessNumber access_number) {
-        Word initial = {0,
-            (uint8_t)letter_code_map[sequence[0]].value,
-            (uint8_t)letter_code_map[sequence[1]].value};
-        WordIndex index = initial.toIndex();
-
-        if (offsets.empty()) offsets.pb(0);
-        forn(i, sz(sequence)) residues.pb((uint8_t) letter_code_map[sequence[i]].value); // store sequence code
-        offsets.pb(residues.size());
-        max_sequence_len = max(max_sequence_len, (Position)sz(sequence));
-        forsn(i, 2, sz(sequence))
-            index.updateIndex(letter_code_map[sequence[i]].value), wordReg[index.value].pb({access_number, i});
-        // TODO: Offload to DISK
+    DB(LetterCodeMap &letter_map) : letter_code_map(letter_map) {
     };
 
+    DB(const DB &) = delete; // SIngletonsih
+    DB &operator=(const DB &) = delete;
 
-    void load_file_to_database(const string& filename) {
-        fstream f(filename.c_str(), ios::in);
-            int access;
-        string sequence;
-        while(f >> access) {
-            f >> sequence;
-            add(sequence, (AccessNumber)access);
-        }
+    ~DB() { if (mapped) munmap((void *) mapped, mapped_len); }
+
+    uint8_t *sequence_of(AccessNumber &access) { return residues + offsets[access]; };
+    uint32_t length_of(AccessNumber &access) { return offsets[access + 1] - offsets[access]; };
+    size_t sequence_count() { return nseq ? nseq - 1 : 0; };
+
+    struct Appearence {
+        AccessNumber *access;
+        Position *pos;
+        uint32_t n;
+        uint32_t size() { return n; }
+    };
+
+    Appearence operator[](const uint16_t &word) const {
+        const uint32_t from = word_off[word];
+        return {post_access + from, post_pos + from, word_off[word + 1] - from};
     }
 
+    // void add(const string &sequence, const AccessNumber access_number) {
+    //     Word initial = {0,
+    //         (uint8_t)letter_code_map[sequence[0]].value,
+    //         (uint8_t)letter_code_map[sequence[1]].value};
+    //     WordIndex index = initial.toIndex();
+    //
+    //     if (offsets.empty()) offsets.pb(0);
+    //     forn(i, sz(sequence)) residues.pb((uint8_t) letter_code_map[sequence[i]].value); // store sequence code
+    //     offsets.pb(residues.size());
+    //     max_sequence_len = max(max_sequence_len, (Position)sz(sequence));
+    //     forsn(i, 2, sz(sequence))
+    //         index.updateIndex(letter_code_map[sequence[i]].value), wordReg[index.value].pb({access_number, i});
+    //     // TODO: Offload to DISK
+    // };
+
+
+    // void load_file_to_database(const string& filename) {
+    //     fstream f(filename.c_str(), ios::in);
+    //         int access;
+    //     string sequence;
+    //     while(f >> access) {
+    //         f >> sequence;
+    //         add(sequence, (AccessNumber)access);
+    //     }
+    // }
+
+    // .txt -> CSR (Compressed Sparse Row) en disco
+    void build_index(const string &source, const string &out) {
+        const filesystem::path parent = filesystem::path(out).parent_path();
+        if (!parent.empty()) filesystem::create_directories(parent);
+        vector<uint8_t> res;
+        vector<uint32_t> off;
+        Position maxlen = 0;
+        {
+            fstream f(source.c_str(), ios::in);
+            int access;
+            string sequence;
+            off.pb(0);
+            while (f >> access) {
+                f >> sequence;
+                forn(i, sz(sequence)) res.pb((uint8_t) letter_code_map[sequence[i]].value);
+                off.pb(res.size());
+                maxlen = max(maxlen, (Position) sz(sequence));
+            }
+        }
+
+        // contar por palabra y prefix sum -> word_start queda con limits
+        vector<uint32_t> word_start(WORDS + 1, 0);
+        uint64_t total = 0;
+        forn(a, sz(off) - 1) {
+            uint32_t from = off[a], to = off[a + 1];
+            if (to - from < WORDSIZE) continue; // secuencia mas corta que una palabra
+            Word initial{};
+            forn(i, WORDSIZE - 1) initial.word[i + 1] = res[from + i];
+            WordIndex index = initial.toIndex();
+            forsn(i, from + WORDSIZE - 1, to)
+                index.updateIndex(res[i]), word_start[index.value + 1]++, total++;
+        }
+        forn(w, WORDS) word_start[w + 1] += word_start[w];
+
+        // write -> cursor[w] = next hole de w
+        vector<AccessNumber> acc(total);
+        vector<Position> pos(total);
+        vector<uint32_t> cursor(word_start.begin(), word_start.end() - 1);
+        forn(a, sz(off) - 1) {
+            uint32_t from = off[a], to = off[a + 1];
+            if (to - from < WORDSIZE) continue;
+            Word initial{};
+            forn(i, WORDSIZE - 1) initial.word[i + 1] = res[from + i];
+            WordIndex index = initial.toIndex();
+            forsn(i, from + WORDSIZE - 1, to) {
+                index.updateIndex(res[i]);
+                uint32_t at = cursor[index.value]++;
+                acc[at] = (AccessNumber) a, pos[at] = (Position) (i - from);
+            }
+        }
+
+        // Sort write por size -> array aligned -> primero 4bytes, 2bytes, 1byte
+        // [Antes, mal ordenado, causaba que leer un uint32 este mal alineado...]
+        fstream f(out.c_str(), ios::out | ios::binary);
+        uint64_t header[6] = {ZBX_MAGIC, res.size(), off.size(), total, (uint64_t) maxlen, 0};
+        f.write((char *) header, ZBX_HEADER);
+        f.write((char *) word_start.data(), (WORDS + 1) * 4);
+        f.write((char *) acc.data(), total * 4);
+        f.write((char *) off.data(), off.size() * 4);
+        f.write((char *) pos.data(), total * 2);
+        f.write((char *) res.data(), res.size());
+    }
+
+    // mmap -> SO asocia archivo a rango de dirs -> el SO trae paginas del disco (page fault)
+    // offload al disco automatico por el SO
+    // corrimiento at += nres para cada pos
+    bool map_index(const string &filename) {
+        if (mapped) munmap((void *) mapped, mapped_len), mapped = nullptr;
+        int fd = ::open(filename.c_str(), O_RDONLY);
+        if (fd < 0) return false;
+        struct stat st{};
+        fstat(fd, &st);
+        mapped_len = (size_t) st.st_size;
+        void *p = mmap(nullptr, mapped_len, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd); // el mapeo sobrevive al fd cerrado
+        if (p == MAP_FAILED) return false;
+        mapped = (uint8_t *) p;
+        uint64_t *header = (uint64_t *) mapped;
+        if (mapped_len < ZBX_HEADER || header[0] != ZBX_MAGIC) return false;
+        nres = header[1], nseq = header[2], npost = header[3];
+        max_sequence_len = (Position) header[4];
+
+        size_t at = ZBX_HEADER;
+        word_off = (uint32_t *) (mapped + at), at += (WORDS + 1) * 4;
+        post_access = (AccessNumber *) (mapped + at), at += npost * 4;
+        offsets = (uint32_t *) (mapped + at), at += nseq * 4;
+        post_pos = (Position *) (mapped + at), at += npost * 2;
+        residues = mapped + at, at += nres;
+        return at == mapped_len;
+    }
+
+    bool open(const string &source, const string &index) {
+        struct stat src{}, idx{};
+        bool fresh = stat(source.c_str(), &src) == 0 && stat(index.c_str(), &idx) == 0 && idx.st_mtime >= src.st_mtime;
+        if (fresh && map_index(index)) return true;
+        build_index(source, index);
+        return map_index(index);
+    }
 };
 
 using Diagonal = int32_t;
 using DiagonalKey = uint64_t; // access << 32 | dbPos - queryPos + queryLen
 static const int ACCESS_KEY_SHIFT = 32;
-// Radix deberia ser 8 pasadas ahora...
 
 const size_t INITIAL_CAPACITY = 1 << 16; // para los buffers
 struct Hit {
@@ -165,13 +318,15 @@ struct Hit {
     Position db_pos;
 
     Hit() = default;
-    Hit(AccessNumber access, Position query_pos, Position db_pos, Position query_len) :  query_pos(query_pos), db_pos(db_pos) {
-        const Diagonal diagonal = (Diagonal)db_pos - (Diagonal)query_pos;
-        key = ((DiagonalKey)access << ACCESS_KEY_SHIFT)
-            | (DiagonalKey)(uint16_t)(diagonal + (Diagonal)query_len);
+
+    Hit(AccessNumber access, Position query_pos, Position db_pos, Position query_len) : query_pos(query_pos),
+        db_pos(db_pos) {
+        const Diagonal diagonal = (Diagonal) db_pos - (Diagonal) query_pos;
+        key = ((DiagonalKey) access << ACCESS_KEY_SHIFT)
+              | (DiagonalKey) (uint16_t) (diagonal + (Diagonal) query_len);
     }
 
-    Diagonal diagonal() const { return (Diagonal)db_pos - (Diagonal)query_pos; }
+    Diagonal diagonal() const { return (Diagonal) db_pos - (Diagonal) query_pos; }
     AccessNumber access() const { return (key >> ACCESS_KEY_SHIFT); }
 };
 
@@ -180,14 +335,20 @@ struct HitBuffer {
     size_t count = 0, capacity = 0;
 
     // Singletonish
-    HitBuffer() : hits(new Hit[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {};
-    HitBuffer(const HitBuffer&) = delete; // no borrar doble
-    HitBuffer& operator=(const HitBuffer&) = delete; // no borrar doble
-    ~HitBuffer() {delete[] hits;};
+    HitBuffer() : hits(new Hit[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {
+    };
+
+    HitBuffer(const HitBuffer &) = delete; // no borrar doble
+    HitBuffer &operator=(const HitBuffer &) = delete; // no borrar doble
+    ~HitBuffer() { delete[] hits; };
 
 
     void reserve(size_t n) {
-        if (n > capacity) { delete[] hits; hits = new Hit[n]; capacity = n; }
+        if (n > capacity) {
+            delete[] hits;
+            hits = new Hit[n];
+            capacity = n;
+        }
         count = 0;
     }
 
@@ -203,33 +364,41 @@ struct HitBuffer {
         hits[count++] = hit;
     }
 
-    Hit& operator[](const size_t &i) {return hits[i];};
+    Hit &operator[](const size_t &i) { return hits[i]; };
 
     struct Radix {
         Hit *scratch = nullptr;
         size_t capacity = 0;
 
         Radix() = default;
-        explicit Radix(size_t n) : scratch(new Hit[n]), capacity(n) {}
-        ~Radix() { delete[] scratch; }
 
-        Radix(const Radix&) = delete; // no borrar doble
-        Radix& operator=(const Radix&) = delete; // no borrar doble
-
-        void reserve(size_t n) {
-            if (n > capacity) { delete[] scratch; scratch = new Hit[n]; capacity = n; }
+        explicit Radix(size_t n) : scratch(new Hit[n]), capacity(n) {
         }
 
-        void sort(HitBuffer &buffer) { // TODO: NO GET KEY DIRECTO KEY
+        ~Radix() { delete[] scratch; }
+
+        Radix(const Radix &) = delete; // no borrar doble
+        Radix &operator=(const Radix &) = delete; // no borrar doble
+
+        void reserve(size_t n) {
+            if (n > capacity) {
+                delete[] scratch;
+                scratch = new Hit[n];
+                capacity = n;
+            }
+        }
+
+        void sort(HitBuffer &buffer) {
+            // TODO: NO GET KEY DIRECTO KEY
             // cuantas pasadas (ahora es 4 por el seize pero es algo que en compile time podemos saber  y calcular dinamicamente...)
             using Key = decltype(Hit::key);
-            constexpr int PASSES = (int)sizeof(Key);  // uint32 -> 4, uint64 -> 8
+            constexpr int PASSES = (int) sizeof(Key); // uint32 -> 4, uint64 -> 8
             if (buffer.count < 2) return; // abs ordenar con 2 o 1 elementos
             reserve(buffer.count);
             size_t histogram[PASSES][256] = {}; // 8kb -> 2kb => entra en L1
 
             for (size_t i = 0; i < buffer.count; ++i)
-                forn(p, PASSES) ++histogram[p][(buffer.hits[i].key >> (p*8)) & 0xFF];
+                forn(p, PASSES) ++histogram[p][(buffer.hits[i].key >> (p * 8)) & 0xFF];
 
             Hit *from = buffer.hits, *to = scratch;
             forn(p, PASSES) {
@@ -249,16 +418,18 @@ struct HitBuffer {
 };
 
 // basicamente un pair<uint32_t, uint32_t> pero se puede manejar por referencia o nullptr
-struct Seed {uint32_t first, second;};
+struct Seed {
+    uint32_t first, second;
+};
 
 struct SeedBuffer {
-
     Seed *seeds = nullptr;
     size_t count = 0, capacity = 0;
 
-    SeedBuffer() : seeds(new Seed[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {}; // como HitBuffer -> hacer generico?
-    SeedBuffer(const SeedBuffer&) = delete; // no borrar doble
-    SeedBuffer& operator=(const SeedBuffer&) = delete; // no borrar doble
+    SeedBuffer() : seeds(new Seed[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {
+    }; // como HitBuffer -> hacer generico?
+    SeedBuffer(const SeedBuffer &) = delete; // no borrar doble
+    SeedBuffer &operator=(const SeedBuffer &) = delete; // no borrar doble
     ~SeedBuffer() { delete[] seeds; }
 
     void grow() {
@@ -273,7 +444,7 @@ struct SeedBuffer {
         seeds[count++] = seed;
     }
 
-    Seed& operator[](const size_t &i) { return seeds[i]; }
+    Seed &operator[](const size_t &i) { return seeds[i]; }
 };
 
 void two_hit(HitBuffer &buffer, SeedBuffer &seeds, uint32_t window, uint32_t min_gap) {
@@ -283,9 +454,12 @@ void two_hit(HitBuffer &buffer, SeedBuffer &seeds, uint32_t window, uint32_t min
         const DiagonalKey key = buffer[i].key;
         size_t last = i++;
         while (i < buffer.count && buffer[i].key == key) {
-            const uint32_t gap = (uint32_t)(buffer[i].db_pos - buffer[last].db_pos);
-            if (gap < min_gap) {i++; continue;} // Altschul 1997 p.3391: "Any hit that overlaps the most recent one is ignored."
-            if (gap <= window) seeds.add({(uint32_t)last, (uint32_t)i});
+            const uint32_t gap = (uint32_t) (buffer[i].db_pos - buffer[last].db_pos);
+            if (gap < min_gap) {
+                i++;
+                continue;
+            } // Altschul 1997 p.3391: "Any hit that overlaps the most recent one is ignored."
+            if (gap <= window) seeds.add({(uint32_t) last, (uint32_t) i});
             last = i++;
         }
     }
@@ -303,8 +477,12 @@ struct Extender {
     uint8_t *query;
     uint32_t query_len; // Variable por query
     uint16_t x_drop_ungapped, x_drop_gapped, gap_open, gap_extend;
-    Extender(BLOSUM& blosum, uint8_t *query, uint32_t query_len, uint8_t x_drop_ungapped = 20, uint8_t x_drop_gapped = 40, uint8_t gap_open = 10, uint8_t gap_extend = 1) :
-        blosum(blosum), query(query), query_len(query_len), x_drop_ungapped(x_drop_ungapped), x_drop_gapped(x_drop_gapped), gap_open(gap_open), gap_extend(gap_extend) {};
+
+    Extender(BLOSUM &blosum, uint8_t *query, uint32_t query_len, uint8_t x_drop_ungapped = 20,
+             uint8_t x_drop_gapped = 40, uint8_t gap_open = 11, uint8_t gap_extend = 1) : blosum(blosum), query(query),
+        query_len(query_len), x_drop_ungapped(x_drop_ungapped), x_drop_gapped(x_drop_gapped), gap_open(gap_open),
+        gap_extend(gap_extend) {
+    };
 
     // A partir del Seed -> Diagonal cte
     Extension ungapped(uint8_t *db, uint32_t db_len, uint32_t qp, uint32_t dp) {
@@ -333,12 +511,15 @@ struct Extender {
             if (score > left_best) left_best = score, left_reach = k;
             if (left_best - score > x_drop_ungapped) break;
         }
-        return {(Position)(d0 - left_reach), (Position)(dp + right_len + 1),
-                (Position)(q0 - left_reach), (Position)(qp + right_len + 1),
-                left_best + ref + right_best, 0};
+        return {
+            (Position) (d0 - left_reach), (Position) (dp + right_len + 1),
+            (Position) (q0 - left_reach), (Position) (qp + right_len + 1),
+            left_best + ref + right_best, 0
+        };
     }
 
     static constexpr int32_t NEG = INT32_MIN / 4;
+
     int32_t half_gapped(uint8_t *q, int32_t qlen, uint8_t *d, int32_t dlen, int32_t &q_reach, int32_t &d_reach) {
         q_reach = d_reach = 0;
         if (qlen <= 0 || dlen <= 0) return 0;
@@ -361,26 +542,28 @@ struct Extender {
             const int jend = min(hi + 1, dlen);
             for (int j = lo; j <= jend; ++j) {
                 int m = NEG; // diagonal: match/mismatch
-                if (j >= 1 && Hprev[j-1] > NEG/2) m = Hprev[j-1] + blosum[q[i-1]][d[j-1]];
+                if (j >= 1 && Hprev[j - 1] > NEG / 2) m = Hprev[j - 1] + blosum[q[i - 1]][d[j - 1]];
                 int e = NEG; // gap en query
                 if (j >= 1) {
-                    int fh = (Hcur[j-1] > NEG/2) ? Hcur[j-1] - gap_open - gap_extend : NEG;
-                    int fe = (Ecur[j-1] > NEG/2) ? Ecur[j-1] - gap_extend            : NEG;
+                    int fh = (Hcur[j - 1] > NEG / 2) ? Hcur[j - 1] - gap_open - gap_extend : NEG;
+                    int fe = (Ecur[j - 1] > NEG / 2) ? Ecur[j - 1] - gap_extend : NEG;
                     e = max(fh, fe);
                 }
-                int fh = (Hprev[j] > NEG/2) ? Hprev[j] - gap_open - gap_extend : NEG;
-                int ff = (f        > NEG/2) ? f        - gap_extend            : NEG;
+                int fh = (Hprev[j] > NEG / 2) ? Hprev[j] - gap_open - gap_extend : NEG;
+                int ff = (f > NEG / 2) ? f - gap_extend : NEG;
                 f = max(fh, ff);
 
                 int h = max(m, max(e, f));
-                if (h <= NEG/2 || best - h > x_drop_gapped) continue;
-                Hcur[j] = h; Ecur[j] = e;
+                if (h <= NEG / 2 || best - h > x_drop_gapped) continue;
+                Hcur[j] = h;
+                Ecur[j] = e;
                 if (h > best) best = h, q_reach = i, d_reach = j;
                 if (new_lo < 0) new_lo = j;
                 new_hi = j;
             }
             if (new_lo < 0) break;
-            lo = new_lo; hi = new_hi;
+            lo = new_lo;
+            hi = new_hi;
             swap(Hprev, Hcur);
         }
         return best;
@@ -389,14 +572,17 @@ struct Extender {
     Extension gapped(uint8_t *db, uint32_t db_len, uint32_t qp, uint32_t dp) {
         int anchor = blosum[query[qp]][db[dp]];
         int rq, rd, lq, ld;
-        int right = half_gapped(query + qp + 1, (int32_t)query_len - (int32_t)qp - 1,
-                                (db + dp + 1), (int32_t)db_len - (int32_t)dp - 1, rq, rd);
+        int right = half_gapped(query + qp + 1, (int32_t) query_len - (int32_t) qp - 1,
+                                (db + dp + 1), (int32_t) db_len - (int32_t) dp - 1, rq, rd);
         vector<uint8_t> qr(query, query + qp), dr(db, db + dp);
-        reverse(qr.begin(), qr.end()); reverse(dr.begin(), dr.end());
-        int left = half_gapped(qr.data(), (int32_t)qr.size(), dr.data(), (int32_t)dr.size(), lq, ld);
-        return {(Position)(dp - ld), (Position)(dp + rd + 1),
-                (Position)(qp - lq), (Position)(qp + rq + 1),
-                anchor + left + right, 0};
+        reverse(qr.begin(), qr.end());
+        reverse(dr.begin(), dr.end());
+        int left = half_gapped(qr.data(), (int32_t) qr.size(), dr.data(), (int32_t) dr.size(), lq, ld);
+        return {
+            (Position) (dp - ld), (Position) (dp + rd + 1),
+            (Position) (qp - lq), (Position) (qp + rq + 1),
+            anchor + left + right, 0
+        };
     }
 };
 
@@ -406,54 +592,65 @@ array<double, 25> load_background_freq(const string &filename, LetterCodeMap &ma
     char c;
     double p;
     double total = 0;
-    while(f >> c) {
+    while (f >> c) {
         f >> p;
         res[map[c].value] = p, total += p;
     }
     return res;
 }
 
-struct GappedConfig { double lambda, K, H_bits; };
+struct GappedConfig {
+    double lambda, K, H_bits;
+};
+
 GappedConfig load_karlin_gapped(const string &filename, int gap_open, int gap_extend) {
     fstream f(filename.c_str(), ios::in);
     int go, ge;
     double lambda, k, h;
-    while(f >> go) {
+    while (f >> go) {
         f >> ge >> lambda >> k >> h;
         if (go == gap_open && ge == gap_extend) return {lambda, k, h};
     }
-    throw runtime_error(filename + ": no hay fila para gap_open=" + to_string(gap_open) +
-                        " gap_extend=" + to_string(gap_extend));
 }
 
 struct KarlinAltschul {
     array<double, 25> P{};
     double long lambda, K, H;
 
-    KarlinAltschul(BLOSUM &blosum, bool with_gaps, array<double, 25> &fallback, GappedConfig &gapped, vector<uint8_t> *residues = nullptr) {
-        if (with_gaps) { // Si hay gaps -> no importa frequencia
-            lambda = gapped.lambda; K = gapped.K;
+    KarlinAltschul(BLOSUM &blosum, bool with_gaps, array<double, 25> &fallback, GappedConfig &gapped,
+                   uint8_t *residues = nullptr, uint64_t nres = 0) {
+        if (with_gaps) {
+            // Si hay gaps -> no importa frequencia
+            lambda = gapped.lambda;
+            K = gapped.K;
             H = gapped.H_bits * log(2.0); // la tabla esta en bits, aca van nats
             return;
         }
 
         double total = 0;
-        if (residues) for (uint8_t r : *residues) if (r < 20) P[r] += 1, total += 1;
+        if (residues) for (uint64_t i = 0; i < nres; i++) if (residues[i] < 20) P[residues[i]] += 1, total += 1;
 
-        if (total > 0) forn(i, 20) P[i] /= total;
-        else forn(i, 20) P[i] = fallback[i];
+        if (total > 0)
+            forn(i, 20) P[i] /= total;
+        else
+            forn(i, 20) P[i] = fallback[i];
         // biseccion sobre F(l) = sum p_i p_j e^(l s_ij) - 1
         // F(0)=0, F'(0)<0 (score esperado al azar es negativo) -> 1 sola raiz positiva
         auto F = [&](double l) {
             double s = 0;
-            forn(i, 20) forn(j, 20) s += P[i] * P[j] * exp(l * blosum[i][j]);
+            forn(i, 20)
+                forn(j, 20) s += P[i] * P[j] * exp(l * blosum[i][j]);
             return s - 1.0;
         };
         double lo = 1e-9, hi = 2.0;
-        forn(it, 200) { double mid = (lo + hi) / 2; (F(mid) < 0 ? lo : hi) = mid; }
+        forn(it, 200) {
+            double mid = (lo + hi) / 2;
+            (F(mid) < 0 ? lo : hi) = mid;
+        }
         lambda = (lo + hi) / 2;
         H = 0;
-        forn(i, 20) forn(j, 20) H += P[i] * P[j] * exp(lambda * blosum[i][j]) * blosum[i][j];
+        forn(i, 20)
+            forn(j, 20) H += P[i] * P[j] * exp(lambda * blosum[i][j]) * blosum[i][j];
         H *= lambda;
         K = gapped.K;
     }
@@ -464,8 +661,8 @@ struct KarlinAltschul {
         // Mal borde -> alineamiento en ultimo residuio -> espacio menor que m*n -> iterar (en 5 converge) [Copiado de NCBI]
         double L = 0, me = m, ne = n;
         forn(it, 5) {
-            me = max((double)(1.0 / K), (double)m - L);
-            ne = max((double)(1.0 / K), n - (double)num_seqs * L);
+            me = max((double) (1.0 / K), (double) m - L);
+            ne = max((double) (1.0 / K), n - (double) num_seqs * L);
             L = log(K * me * ne) / H;
             if (L < 0) L = 0;
         }
@@ -480,11 +677,16 @@ int main() try {
     LetterCodeMap index_map = load_letter_code("assets/LETTER_INDEX");
     array<double, 25> background = load_background_freq("assets/BACKGROUND_FREQ", index_map);
     GappedConfig ungapped_config = load_karlin_gapped("assets/KARLIN_GAPPED", 0, 0);
-    GappedConfig gapped_config   = load_karlin_gapped("assets/KARLIN_GAPPED", 10, 1);
+    GappedConfig gapped_config = load_karlin_gapped("assets/KARLIN_GAPPED", 11, 1);
 
 
     DB database(index_map);
-    database.load_file_to_database("assets/SEQUENCE_large");
+    const string source_file = "assets/SEQUENCE_large";
+    const string index_file = "cache/SEQUENCE_large.zbx";
+    if (!database.open(source_file, index_file)) {
+        cerr << "no pude abrir el indice " << index_file << el;
+        return 1;
+    }
 
     WordPermutation word_permutation(blosum, 11);
     //word_permutation.auto_get_permutations("permutation.cache");
@@ -493,16 +695,18 @@ int main() try {
 
     uint32_t qLen = sz(query_string);
     vector<uint8_t> query;
-    forn(i, qLen) query.pb((uint8_t)index_map[query_string[i]].value);
+    forn(i, qLen) query.pb((uint8_t) index_map[query_string[i]].value);
 
-    Word initial = {0, query[0], query[1]};
+    Word initial{};
+    forn(i, WORDSIZE - 1) initial.word[i + 1] = query[i];
     WordIndex index = initial.toIndex();
     HitBuffer buffer;
-    forsn(i, 2, qLen) {
+    forsn(i, WORDSIZE - 1, qLen) {
         index.updateIndex(query[i]);
-        for ( auto wordIndex: word_permutation[index.value])
-            for (auto &wordMatch : database.wordReg[wordIndex] )
-                buffer.add(Hit(wordMatch.fi, (Position)i, wordMatch.se, qLen));
+        for (auto wordIndex: word_permutation[index.value]) {
+            DB::Appearence matches = database[wordIndex]; // dos punteros al mmap
+            forn(k, matches.n) buffer.add(Hit(matches.access[k], (Position) i, matches.pos[k], qLen));
+        }
     }
     cout << "hits " << buffer.count << el;
 
@@ -514,12 +718,12 @@ int main() try {
     cout << "seeds " << seeds.count << el;
 
     Extender extender(blosum, query.data(), qLen);
-    KarlinAltschul ku(blosum, false, background, ungapped_config, &database.residues);
-    KarlinAltschul kg(blosum, true,  background, gapped_config,   &database.residues);
+    KarlinAltschul ku(blosum, false, background, ungapped_config, database.residues, database.nres);
+    KarlinAltschul kg(blosum, true, background, gapped_config, database.residues, database.nres);
 
     vector<Extension> hsps;
     DiagonalKey covered_key = 0;
-    Position covered_until = 0;   // arranca en 0: db_pos < 0 nunca es cierto sin signo
+    Position covered_until = 0; // arranca en 0: db_pos < 0 nunca es cierto sin signo
     forn(s, seeds.count) {
         Hit &hit = buffer[seeds[s].second];
         if (hit.key == covered_key && hit.db_pos < covered_until) continue;
@@ -532,7 +736,7 @@ int main() try {
     }
     cout << "hsps " << sz(hsps) << el;
 
-    for (auto &h : hsps) {
+    for (auto &h: hsps) {
         Extension g = extender.gapped(database.sequence_of(h.access), database.length_of(h.access),
                                       (h.q_start + h.q_end) / 2, (h.db_start + h.db_end) / 2);
         g.access = h.access;
@@ -540,29 +744,33 @@ int main() try {
     }
 
     map<AccessNumber, Extension> best;
-    for (auto &h : hsps) if (!best.count(h.access) || h.score > best[h.access].score) best[h.access] = h;
+    for (auto &h: hsps) if (!best.count(h.access) || h.score > best[h.access].score) best[h.access] = h;
     vector<Extension> results;
-    for (auto &kv : best) results.pb(kv.second);
-    sort(results.begin(), results.end(), [](Extension &a,Extension &b) { return a.score > b.score; });
+    for (auto &kv: best) results.pb(kv.second);
+    sort(results.begin(), results.end(), [](Extension &a, Extension &b) { return a.score > b.score; });
 
-    double db_len = database.residues.size();
+    double db_len = (double) database.nres;
     uint32_t num_seqs = database.sequence_count();
     printf("\n%-8s %7s %7s %11s   %-13s %s\n", "access", "score", "bits", "E-value", "query", "base");
     int shown = 0;
-    for (auto &h : results) {
+    for (auto &h: results) {
         double e = kg.evalue(h.score, qLen, db_len, num_seqs);
         if (e > 0.001) break;
         if (++shown > 20) break;
         printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u\n", h.access, h.score,
-               (double)kg.bits(h.score), e, h.q_start, h.q_end, h.db_start, h.db_end);
+               (double) kg.bits(h.score), e, h.q_start, h.q_end, h.db_start, h.db_end);
     }
-    if (!shown) forn(i, min(5, sz(results))) {
-        Extension &h = results[i];
-        printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u  NS\n", h.access, h.score,
-               (double)kg.bits(h.score), kg.evalue(h.score, qLen, db_len, num_seqs),
-               h.q_start, h.q_end, h.db_start, h.db_end);
-    }
-    cout << el << "lambda " << (double)ku.lambda << "  K " << (double)ku.K << "  H " << (double)ku.H << " (from DB)" << el;
+    if (!shown)
+        forn(i, min(5, sz(results))) {
+            Extension &h = results[i];
+            printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u  NS\n", h.access, h.score,
+                   (double) kg.bits(h.score), kg.evalue(h.score, qLen, db_len, num_seqs),
+                   h.q_start, h.q_end, h.db_start, h.db_end);
+        }
+    cout << el << "lambda " << (double) ku.lambda << "  K " << (double) ku.K << "  H " << (double) ku.H << " (from DB)"
+            << el;
     return 0;
+} catch (exception &e) {
+    cerr << "error: " << e.what() << el;
+    return 1;
 }
-catch (exception &e) { cerr << "error: " << e.what() << el; return 1; }

@@ -18,6 +18,7 @@ err.log
 # Generated caches
 /permutation.cache
 /cache/
+*.zbx
 
 # JetBrains IDE settings
 .idea/
