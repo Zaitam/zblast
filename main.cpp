@@ -8,9 +8,9 @@
 
 using namespace std;
 
-#define forsn(i, s, n) for (int i = (s); i < (int)(n); i++)
+#define forsn(i, s, n) for (int i = (s); i < (int) (n); i++)
 #define forn(i, n) forsn(i, 0, n)
-#define sz(x) (int)(x).size()
+#define sz(x) (int) (x).size()
 #define fi first
 #define se second
 #define pb push_back
@@ -64,15 +64,15 @@ LetterCodeMap load_letter_code(const string &filename) {
         if (isalpha((uint8_t) c)) res[(char) (c | 32)] = (int8_t) t; // la misma en minuscula
     }
     const int8_t unknown = res['X'].value; // digits o simbolos o U o O
-    forn(i, 256) if (res.map[i].value < 0) res.map[i] = unknown;
+    forn(i, 256)
+        if (res.map[i].value < 0) res.map[i] = unknown;
     return res;
 }
 
 struct WordIndex {
     uint16_t value;
 
-    WordIndex(uint16_t index) : value(index) {
-    };
+    WordIndex(uint16_t index) : value(index) {};
     void updateIndex(const uint8_t &new_last) { value = (value % (25 * 25)) * 25 + new_last; }
 };
 
@@ -105,7 +105,7 @@ struct WordPermutation {
             return;
         }
         int max_rest = 0;
-        forsn(j, k+1, 3) max_rest += best[from.word[j]];
+        forsn(j, k + 1, 3) max_rest += best[from.word[j]];
         forn(c, 25) {
             int next = partial + blosum[from.word[k]][c];
             if (next + max_rest < threshold) continue;
@@ -157,13 +157,14 @@ struct DB {
 
     Position max_sequence_len = 0;
 
-    DB(LetterCodeMap &letter_map) : letter_code_map(letter_map) {
-    };
+    DB(LetterCodeMap &letter_map) : letter_code_map(letter_map) {};
 
     DB(const DB &) = delete; // SIngletonsih
     DB &operator=(const DB &) = delete;
 
-    ~DB() { if (mapped) munmap((void *) mapped, mapped_len); }
+    ~DB() {
+        if (mapped) munmap((void *) mapped, mapped_len);
+    }
 
     uint8_t *sequence_of(AccessNumber &access) { return residues + offsets[access]; };
     uint32_t length_of(AccessNumber &access) { return offsets[access + 1] - offsets[access]; };
@@ -195,7 +196,6 @@ struct DB {
     //         index.updateIndex(letter_code_map[sequence[i]].value), wordReg[index.value].pb({access_number, i});
     //     // TODO: Offload to DISK
     // };
-
 
     // void load_file_to_database(const string& filename) {
     //     fstream f(filename.c_str(), ios::in);
@@ -236,8 +236,7 @@ struct DB {
             Word initial{};
             forn(i, WORDSIZE - 1) initial.word[i + 1] = res[from + i];
             WordIndex index = initial.toIndex();
-            forsn(i, from + WORDSIZE - 1, to)
-                index.updateIndex(res[i]), word_start[index.value + 1]++, total++;
+            forsn(i, from + WORDSIZE - 1, to) index.updateIndex(res[i]), word_start[index.value + 1]++, total++;
         }
         forn(w, WORDS) word_start[w + 1] += word_start[w];
 
@@ -319,11 +318,10 @@ struct Hit {
 
     Hit() = default;
 
-    Hit(AccessNumber access, Position query_pos, Position db_pos, Position query_len) : query_pos(query_pos),
-        db_pos(db_pos) {
+    Hit(AccessNumber access, Position query_pos, Position db_pos, Position query_len) :
+        query_pos(query_pos), db_pos(db_pos) {
         const Diagonal diagonal = (Diagonal) db_pos - (Diagonal) query_pos;
-        key = ((DiagonalKey) access << ACCESS_KEY_SHIFT)
-              | (DiagonalKey) (uint16_t) (diagonal + (Diagonal) query_len);
+        key = ((DiagonalKey) access << ACCESS_KEY_SHIFT) | (DiagonalKey) (uint16_t) (diagonal + (Diagonal) query_len);
     }
 
     Diagonal diagonal() const { return (Diagonal) db_pos - (Diagonal) query_pos; }
@@ -335,13 +333,11 @@ struct HitBuffer {
     size_t count = 0, capacity = 0;
 
     // Singletonish
-    HitBuffer() : hits(new Hit[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {
-    };
+    HitBuffer() : hits(new Hit[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {};
 
     HitBuffer(const HitBuffer &) = delete; // no borrar doble
     HitBuffer &operator=(const HitBuffer &) = delete; // no borrar doble
     ~HitBuffer() { delete[] hits; };
-
 
     void reserve(size_t n) {
         if (n > capacity) {
@@ -372,8 +368,7 @@ struct HitBuffer {
 
         Radix() = default;
 
-        explicit Radix(size_t n) : scratch(new Hit[n]), capacity(n) {
-        }
+        explicit Radix(size_t n) : scratch(new Hit[n]), capacity(n) {}
 
         ~Radix() { delete[] scratch; }
 
@@ -406,8 +401,7 @@ struct HitBuffer {
                 size_t *hist = histogram[p], offset = 0;
                 size_t n;
                 forn(bucket, 256) n = hist[bucket], hist[bucket] = offset, offset += n;
-                for (size_t i = 0; i < buffer.count; i++)
-                    to[hist[(from[i].key >> (p * 8)) & 0xFF]++] = from[i];
+                for (size_t i = 0; i < buffer.count; i++) to[hist[(from[i].key >> (p * 8)) & 0xFF]++] = from[i];
                 swap(from, to);
             }
             if (from == buffer.hits) return; // paridad -> cambiar el buffer a que quede en el otro array sino
@@ -426,8 +420,8 @@ struct SeedBuffer {
     Seed *seeds = nullptr;
     size_t count = 0, capacity = 0;
 
-    SeedBuffer() : seeds(new Seed[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {
-    }; // como HitBuffer -> hacer generico?
+    SeedBuffer() :
+        seeds(new Seed[INITIAL_CAPACITY]), capacity(INITIAL_CAPACITY) {}; // como HitBuffer -> hacer generico?
     SeedBuffer(const SeedBuffer &) = delete; // no borrar doble
     SeedBuffer &operator=(const SeedBuffer &) = delete; // no borrar doble
     ~SeedBuffer() { delete[] seeds; }
@@ -479,10 +473,9 @@ struct Extender {
     uint16_t x_drop_ungapped, x_drop_gapped, gap_open, gap_extend;
 
     Extender(BLOSUM &blosum, uint8_t *query, uint32_t query_len, uint8_t x_drop_ungapped = 20,
-             uint8_t x_drop_gapped = 40, uint8_t gap_open = 11, uint8_t gap_extend = 1) : blosum(blosum), query(query),
-        query_len(query_len), x_drop_ungapped(x_drop_ungapped), x_drop_gapped(x_drop_gapped), gap_open(gap_open),
-        gap_extend(gap_extend) {
-    };
+             uint8_t x_drop_gapped = 40, uint8_t gap_open = 11, uint8_t gap_extend = 1) :
+        blosum(blosum), query(query), query_len(query_len), x_drop_ungapped(x_drop_ungapped),
+        x_drop_gapped(x_drop_gapped), gap_open(gap_open), gap_extend(gap_extend) {};
 
     // A partir del Seed -> Diagonal cte
     Extension ungapped(uint8_t *db, uint32_t db_len, uint32_t qp, uint32_t dp) {
@@ -511,11 +504,8 @@ struct Extender {
             if (score > left_best) left_best = score, left_reach = k;
             if (left_best - score > x_drop_ungapped) break;
         }
-        return {
-            (Position) (d0 - left_reach), (Position) (dp + right_len + 1),
-            (Position) (q0 - left_reach), (Position) (qp + right_len + 1),
-            left_best + ref + right_best, 0
-        };
+        return {(Position) (d0 - left_reach),    (Position) (dp + right_len + 1), (Position) (q0 - left_reach),
+                (Position) (qp + right_len + 1), left_best + ref + right_best,    0};
     }
 
     static constexpr int32_t NEG = INT32_MIN / 4;
@@ -572,17 +562,14 @@ struct Extender {
     Extension gapped(uint8_t *db, uint32_t db_len, uint32_t qp, uint32_t dp) {
         int anchor = blosum[query[qp]][db[dp]];
         int rq, rd, lq, ld;
-        int right = half_gapped(query + qp + 1, (int32_t) query_len - (int32_t) qp - 1,
-                                (db + dp + 1), (int32_t) db_len - (int32_t) dp - 1, rq, rd);
+        int right = half_gapped(query + qp + 1, (int32_t) query_len - (int32_t) qp - 1, (db + dp + 1),
+                                (int32_t) db_len - (int32_t) dp - 1, rq, rd);
         vector<uint8_t> qr(query, query + qp), dr(db, db + dp);
         reverse(qr.begin(), qr.end());
         reverse(dr.begin(), dr.end());
         int left = half_gapped(qr.data(), (int32_t) qr.size(), dr.data(), (int32_t) dr.size(), lq, ld);
-        return {
-            (Position) (dp - ld), (Position) (dp + rd + 1),
-            (Position) (qp - lq), (Position) (qp + rq + 1),
-            anchor + left + right, 0
-        };
+        return {(Position) (dp - ld),     (Position) (dp + rd + 1), (Position) (qp - lq),
+                (Position) (qp + rq + 1), anchor + left + right,    0};
     }
 };
 
@@ -628,7 +615,9 @@ struct KarlinAltschul {
         }
 
         double total = 0;
-        if (residues) for (uint64_t i = 0; i < nres; i++) if (residues[i] < 20) P[residues[i]] += 1, total += 1;
+        if (residues)
+            for (uint64_t i = 0; i < nres; i++)
+                if (residues[i] < 20) P[residues[i]] += 1, total += 1;
 
         if (total > 0)
             forn(i, 20) P[i] /= total;
@@ -679,7 +668,6 @@ int main() try {
     GappedConfig ungapped_config = load_karlin_gapped("assets/KARLIN_GAPPED", 0, 0);
     GappedConfig gapped_config = load_karlin_gapped("assets/KARLIN_GAPPED", 11, 1);
 
-
     DB database(index_map);
     const string source_file = "assets/SEQUENCE_large";
     const string index_file = "cache/SEQUENCE_large.zbx";
@@ -728,8 +716,7 @@ int main() try {
         Hit &hit = buffer[seeds[s].second];
         if (hit.key == covered_key && hit.db_pos < covered_until) continue;
         AccessNumber acc = hit.access();
-        Extension e = extender.ungapped(database.sequence_of(acc), database.length_of(acc),
-                                        hit.query_pos, hit.db_pos);
+        Extension e = extender.ungapped(database.sequence_of(acc), database.length_of(acc), hit.query_pos, hit.db_pos);
         e.access = acc;
         covered_key = hit.key, covered_until = e.db_end;
         if (ku.bits(e.score) >= 22) hsps.pb(e); // S_g del paper: ~22 bits
@@ -744,7 +731,8 @@ int main() try {
     }
 
     map<AccessNumber, Extension> best;
-    for (auto &h: hsps) if (!best.count(h.access) || h.score > best[h.access].score) best[h.access] = h;
+    for (auto &h: hsps)
+        if (!best.count(h.access) || h.score > best[h.access].score) best[h.access] = h;
     vector<Extension> results;
     for (auto &kv: best) results.pb(kv.second);
     sort(results.begin(), results.end(), [](Extension &a, Extension &b) { return a.score > b.score; });
@@ -757,18 +745,17 @@ int main() try {
         double e = kg.evalue(h.score, qLen, db_len, num_seqs);
         if (e > 0.001) break;
         if (++shown > 20) break;
-        printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u\n", h.access, h.score,
-               (double) kg.bits(h.score), e, h.q_start, h.q_end, h.db_start, h.db_end);
+        printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u\n", h.access, h.score, (double) kg.bits(h.score), e,
+               h.q_start, h.q_end, h.db_start, h.db_end);
     }
     if (!shown)
         forn(i, min(5, sz(results))) {
             Extension &h = results[i];
-            printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u  NS\n", h.access, h.score,
-                   (double) kg.bits(h.score), kg.evalue(h.score, qLen, db_len, num_seqs),
-                   h.q_start, h.q_end, h.db_start, h.db_end);
+            printf("%-8u %7d %7.1f %11.2g   %5u-%-7u %6u-%-8u  NS\n", h.access, h.score, (double) kg.bits(h.score),
+                   kg.evalue(h.score, qLen, db_len, num_seqs), h.q_start, h.q_end, h.db_start, h.db_end);
         }
     cout << el << "lambda " << (double) ku.lambda << "  K " << (double) ku.K << "  H " << (double) ku.H << " (from DB)"
-            << el;
+         << el;
     return 0;
 } catch (exception &e) {
     cerr << "error: " << e.what() << el;

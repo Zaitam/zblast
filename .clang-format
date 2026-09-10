@@ -1,0 +1,20 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+PointerAlignment: Right
+SpaceAfterCStyleCast: true
+SpaceBeforeRangeBasedForLoopColon: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AlignTrailingComments: false
+SortIncludes: Never
+ReflowComments: false
+PackConstructorInitializers: BinPack
+ForEachMacros: ['forn', 'forsn']
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterForeachMacros: false
+AlwaysBreakTemplateDeclarations: Yes
+SpaceAfterTemplateKeyword: false
+BreakConstructorInitializers: AfterColon
